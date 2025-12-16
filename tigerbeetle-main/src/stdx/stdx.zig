@@ -1,0 +1,1342 @@
+//! Extensions to the standard library -- things which could have been in std, but aren't.
+//!
+//! Unlike std, the namespacing is relatively flat: `stdx.PRNG` rather than `stdx.random.PRNG`.
+//! We don't care about backwards compatibility and prefer directness to scalability. Hierarchy can
+//! always be introduced later, when/if stdx grows too large.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const assert = std.debug.assert;
+
+pub const BitSetType = @import("bit_set.zig").BitSetType;
+pub const BoundedArrayType = @import("bounded_array.zig").BoundedArrayType;
+pub const PRNG = @import("prng.zig");
+pub const RingBufferType = @import("ring_buffer.zig").RingBufferType;
+pub const Snap = @import("testing/snaptest.zig").Snap;
+pub const ZipfianGenerator = @import("zipfian.zig").ZipfianGenerator;
+pub const ZipfianShuffled = @import("zipfian.zig").ZipfianShuffled;
+
+pub const aegis = @import("aegis.zig");
+pub const dbg = @import("debug.zig").dbg;
+pub const flags = @import("flags.zig").parse;
+pub const memory_lock_allocated = @import("mlock.zig").memory_lock_allocated;
+pub const timeit = @import("debug.zig").timeit;
+pub const unshare = @import("unshare.zig");
+pub const windows = @import("windows.zig");
+pub const radix_sort = @import("radix.zig").sort;
+
+// Import these as `const GiB = stdx.GiB;`
+pub const KiB = 1 << 10;
+pub const MiB = 1 << 20;
+pub const GiB = 1 << 30;
+pub const TiB = 1 << 40;
+pub const PiB = 1 << 50;
+
+comptime {
+    assert(KiB == 1024);
+    assert(MiB == 1024 * KiB);
+    assert(GiB == 1024 * MiB);
+    assert(TiB == 1024 * GiB);
+    assert(PiB == 1024 * TiB);
+}
+
+pub inline fn div_ceil(numerator: anytype, denominator: anytype) @TypeOf(numerator, denominator) {
+    comptime {
+        switch (@typeInfo(@TypeOf(numerator))) {
+            .int => |int| assert(int.signedness == .unsigned),
+            .comptime_int => assert(numerator >= 0),
+            else => @compileError("div_ceil: invalid numerator type"),
+        }
+
+        switch (@typeInfo(@TypeOf(denominator))) {
+            .int => |int| assert(int.signedness == .unsigned),
+            .comptime_int => assert(denominator > 0),
+            else => @compileError("div_ceil: invalid denominator type"),
+        }
+    }
+
+    assert(denominator > 0);
+
+    if (numerator == 0) return 0;
+    return @divFloor(numerator - 1, denominator) + 1;
+}
+
+test "div_ceil" {
+    // Comptime ints.
+    try std.testing.expectEqual(div_ceil(0, 8), 0);
+    try std.testing.expectEqual(div_ceil(1, 8), 1);
+    try std.testing.expectEqual(div_ceil(7, 8), 1);
+    try std.testing.expectEqual(div_ceil(8, 8), 1);
+    try std.testing.expectEqual(div_ceil(9, 8), 2);
+
+    // Unsized ints
+    const max = std.math.maxInt(u64);
+    try std.testing.expectEqual(div_ceil(@as(u64, 0), 8), 0);
+    try std.testing.expectEqual(div_ceil(@as(u64, 1), 8), 1);
+    try std.testing.expectEqual(div_ceil(@as(u64, max), 2), max / 2 + 1);
+    try std.testing.expectEqual(div_ceil(@as(u64, max) - 1, 2), max / 2);
+    try std.testing.expectEqual(div_ceil(@as(u64, max) - 2, 2), max / 2);
+}
+
+pub const SizePrecision = enum { exact, inexact };
+
+pub inline fn copy_left(
+    comptime precision: SizePrecision,
+    comptime T: type,
+    target: []T,
+    source: []const T,
+) void {
+    switch (precision) {
+        .exact => assert(target.len == source.len),
+        .inexact => assert(target.len >= source.len),
+    }
+
+    if (!disjoint_slices(T, T, target, source)) {
+        assert(@intFromPtr(target.ptr) < @intFromPtr(source.ptr));
+    }
+
+    // (Bypass tidy's ban.)
+    const copyForwards = std.mem.copyForwards;
+    copyForwards(T, target, source);
+}
+
+test "copy_left" {
+    const a = try std.testing.allocator.alloc(usize, 8);
+    defer std.testing.allocator.free(a);
+
+    for (a, 0..) |*v, i| v.* = i;
+    copy_left(.exact, usize, a[0..6], a[2..]);
+    try std.testing.expect(std.mem.eql(usize, a, &.{ 2, 3, 4, 5, 6, 7, 6, 7 }));
+}
+
+pub inline fn copy_right(
+    comptime precision: SizePrecision,
+    comptime T: type,
+    target: []T,
+    source: []const T,
+) void {
+    switch (precision) {
+        .exact => assert(target.len == source.len),
+        .inexact => assert(target.len >= source.len),
+    }
+
+    if (!disjoint_slices(T, T, target, source)) {
+        assert(@intFromPtr(target.ptr) > @intFromPtr(source.ptr));
+    }
+
+    // (Bypass tidy's ban.)
+    const copyBackwards = std.mem.copyBackwards;
+    copyBackwards(T, target, source);
+}
+
+test "copy_right" {
+    const a = try std.testing.allocator.alloc(usize, 8);
+    defer std.testing.allocator.free(a);
+
+    for (a, 0..) |*v, i| v.* = i;
+    copy_right(.exact, usize, a[2..], a[0..6]);
+    try std.testing.expect(std.mem.eql(usize, a, &.{ 0, 1, 0, 1, 2, 3, 4, 5 }));
+}
+
+pub inline fn copy_disjoint(
+    comptime precision: SizePrecision,
+    comptime T: type,
+    target: []T,
+    source: []const T,
+) void {
+    switch (precision) {
+        .exact => assert(target.len == source.len),
+        .inexact => assert(target.len >= source.len),
+    }
+
+    // disjoint_slices() doesn't work in comptime, because of limitations with @intFromPtr:
+    // https://github.com/ziglang/zig/issues/23072.
+    //
+    // It's also possible to construct slices into an array at comptime that are _not_ disjoint,
+    // which would violate the intention of this function, so it can't just be skipped.
+    assert(!@inComptime());
+    assert(disjoint_slices(T, T, target, source));
+
+    @memcpy(target[0..source.len], source); // Bypass tidy's ban, for stdx.
+}
+
+pub inline fn disjoint_slices(comptime A: type, comptime B: type, a: []const A, b: []const B) bool {
+    return @intFromPtr(a.ptr) + a.len * @sizeOf(A) <= @intFromPtr(b.ptr) or
+        @intFromPtr(b.ptr) + b.len * @sizeOf(B) <= @intFromPtr(a.ptr);
+}
+
+test "disjoint_slices" {
+    const a = try std.testing.allocator.alignedAlloc(u8, @sizeOf(u32), 8 * @sizeOf(u32));
+    defer std.testing.allocator.free(a);
+
+    const b = try std.testing.allocator.alloc(u32, 8);
+    defer std.testing.allocator.free(b);
+
+    try std.testing.expectEqual(true, disjoint_slices(u8, u32, a, b));
+    try std.testing.expectEqual(true, disjoint_slices(u32, u8, b, a));
+
+    try std.testing.expectEqual(true, disjoint_slices(u8, u8, a, a[0..0]));
+    try std.testing.expectEqual(true, disjoint_slices(u32, u32, b, b[0..0]));
+
+    try std.testing.expectEqual(false, disjoint_slices(u8, u8, a, a[0..1]));
+    try std.testing.expectEqual(false, disjoint_slices(u8, u8, a, a[a.len - 1 .. a.len]));
+
+    try std.testing.expectEqual(false, disjoint_slices(u32, u32, b, b[0..1]));
+    try std.testing.expectEqual(false, disjoint_slices(u32, u32, b, b[b.len - 1 .. b.len]));
+
+    try std.testing.expectEqual(false, disjoint_slices(u8, u32, a, std.mem.bytesAsSlice(u32, a)));
+    try std.testing.expectEqual(false, disjoint_slices(u32, u8, b, std.mem.sliceAsBytes(b)));
+}
+
+/// Checks that a byteslice is zeroed.
+pub fn zeroed(bytes: []const u8) bool {
+    // This implementation already gets vectorized
+    // https://godbolt.org/z/46cMsPKPc
+    var byte_bits: u8 = 0;
+    for (bytes) |byte| {
+        byte_bits |= byte;
+    }
+    return byte_bits == 0;
+}
+
+/// Similar to `std.mem.bytesAsSlice`, but allows buffers with inexact sizes,
+/// returning the largest possible slice that is less than or equal to the buffer length.
+/// Differently from `std.mem.bytesAsSlice` that can return `[]align(1) T`, this function
+/// always `@alignCast` the result.
+pub fn bytes_as_slice(
+    comptime precision: SizePrecision,
+    comptime T: type,
+    bytes: anytype,
+) type: {
+    const type_info = @typeInfo(@TypeOf(bytes));
+    switch (type_info) {
+        .pointer => |info| switch (info.size) {
+            .one => switch (@typeInfo(info.child)) {
+                .array => |array_info| assert(array_info.child == u8),
+                else => unreachable,
+            },
+            .slice => assert(info.child == u8),
+            else => unreachable,
+        },
+        else => unreachable,
+    }
+
+    break :type if (type_info.pointer.is_const) []const T else []T;
+} {
+    switch (precision) {
+        .exact => {
+            assert(bytes.len % @sizeOf(T) == 0);
+            return @alignCast(std.mem.bytesAsSlice(T, bytes));
+        },
+        .inexact => {
+            const size = @divFloor(bytes.len, @sizeOf(T)) * @sizeOf(T);
+            return @alignCast(std.mem.bytesAsSlice(T, bytes[0..size]));
+        },
+    }
+}
+
+test bytes_as_slice {
+    var buffer: [64]u8 = undefined;
+    const T10 = extern struct { content: [10]u8 };
+    const T16 = extern struct { content: [16]u8 };
+
+    try std.testing.expectEqual(
+        @as(usize, 4),
+        bytes_as_slice(.exact, T16, buffer[0..]).len,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 6),
+        bytes_as_slice(.exact, T10, buffer[0..60]).len,
+    );
+
+    try std.testing.expectEqual(
+        @as(usize, 6),
+        bytes_as_slice(.inexact, T10, buffer[0..]).len,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 4),
+        bytes_as_slice(.inexact, T16, buffer[0..]).len,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 6),
+        bytes_as_slice(.inexact, T10, buffer[0 .. buffer.len - 1]).len,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 3),
+        bytes_as_slice(.inexact, T16, buffer[0 .. buffer.len - 1]).len,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 5),
+        bytes_as_slice(.inexact, T10, buffer[0 .. buffer.len - 10]).len,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 3),
+        bytes_as_slice(.inexact, T16, buffer[0 .. buffer.len - 10]).len,
+    );
+}
+
+/// Splits the `haystack` around the first occurrence of `needle`, returning parts before and after.
+///
+/// This is a Zig version of Go's `string.Cut` / Rust's `str::split_once`. Cut turns out to be a
+/// surprisingly versatile primitive for ad-hoc string processing. Often `std.mem.indexOf` and
+/// `std.mem.split` can be replaced with a shorter and clearer code using  `cut`.
+pub fn cut(haystack: []const u8, needle: []const u8) ?struct { []const u8, []const u8 } {
+    const index = std.mem.indexOf(u8, haystack, needle) orelse return null;
+
+    return .{ haystack[0..index], haystack[index + needle.len ..] };
+}
+
+pub fn cut_prefix(haystack: []const u8, needle: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, haystack, needle)) {
+        return haystack[needle.len..];
+    }
+    return null;
+}
+
+pub fn cut_suffix(haystack: []const u8, needle: []const u8) ?[]const u8 {
+    if (std.mem.endsWith(u8, haystack, needle)) {
+        return haystack[haystack.len - needle.len ..];
+    }
+    return null;
+}
+
+/// `maybe` is the dual of `assert`: it signals that condition is sometimes true
+///  and sometimes false.
+///
+/// Currently we use it for documentation, but maybe one day we plug it into
+/// coverage.
+pub fn maybe(ok: bool) void {
+    assert(ok or !ok);
+}
+
+pub const log = if (builtin.is_test)
+    // Downgrade `err` to `warn` for tests.
+    // Zig fails any test that does `log.err`, but we want to test those code paths here.
+    struct {
+        pub fn scoped(comptime scope: @Type(.enum_literal)) type {
+            const base = std.log.scoped(scope);
+            return struct {
+                pub const err = warn;
+                pub const warn = base.warn;
+                pub const info = base.info;
+                pub const debug = base.debug;
+            };
+        }
+    }
+else
+    std.log;
+
+/// An alternative to the default logFn from `std.log`, which prepends a UTC timestamp.
+pub fn log_with_timestamp(
+    comptime message_level: std.log.Level,
+    comptime scope: @Type(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    const level_text = comptime message_level.asText();
+    const scope_prefix = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
+    const date_time = DateTimeUTC.now();
+
+    const stderr = std.io.getStdErr().writer();
+    var buffered_writer = std.io.bufferedWriter(stderr);
+    const writer = buffered_writer.writer();
+
+    nosuspend {
+        date_time.format("", .{}, writer) catch return;
+        writer.print(" " ++ level_text ++ scope_prefix ++ format ++ "\n", args) catch return;
+        buffered_writer.flush() catch return;
+    }
+}
+
+/// Compare two values by directly comparing the underlying memory.
+///
+/// Assert at compile time that this is a reasonable thing to do for a given `T`. That is, check
+/// that:
+///   - `T` doesn't have any non-deterministic padding,
+///   - `T` doesn't embed any pointers.
+pub fn equal_bytes(comptime T: type, a: *const T, b: *const T) bool {
+    comptime assert(has_unique_representation(T));
+    comptime assert(!has_pointers(T));
+    comptime assert(@sizeOf(T) * 8 == @bitSizeOf(T));
+
+    // Pick the biggest "word" for word-wise comparison, and don't try to early-return on the first
+    // mismatch, so that a compiler can vectorize the loop.
+
+    const Word = comptime for (.{ u64, u32, u16, u8 }) |Word| {
+        if (@alignOf(T) >= @alignOf(Word) and @sizeOf(T) % @sizeOf(Word) == 0) break Word;
+    } else unreachable;
+
+    const a_words = std.mem.bytesAsSlice(Word, std.mem.asBytes(a));
+    const b_words = std.mem.bytesAsSlice(Word, std.mem.asBytes(b));
+    assert(a_words.len == b_words.len);
+
+    var total: Word = 0;
+    for (a_words, b_words) |a_word, b_word| {
+        total |= a_word ^ b_word;
+    }
+
+    return total == 0;
+}
+
+fn has_pointers(comptime T: type) bool {
+    switch (@typeInfo(T)) {
+        .pointer => return true,
+        // Be conservative.
+        else => return true,
+
+        .bool, .int, .@"enum" => return false,
+
+        .array => |info| return comptime has_pointers(info.child),
+        .@"struct" => |info| {
+            inline for (info.fields) |field| {
+                if (comptime has_pointers(field.type)) return true;
+            }
+            return false;
+        },
+    }
+}
+
+/// Checks that a type does not have implicit padding.
+pub fn no_padding(comptime T: type) bool {
+    comptime switch (@typeInfo(T)) {
+        .void => return true,
+        .int => return @bitSizeOf(T) == 8 * @sizeOf(T),
+        .array => |info| return no_padding(info.child),
+        .@"struct" => |info| {
+            switch (info.layout) {
+                .auto => return false,
+                .@"extern" => {
+                    for (info.fields) |field| {
+                        if (!no_padding(field.type)) return false;
+                    }
+
+                    // Check offsets of u128 and pseudo-u256 fields.
+                    for (info.fields) |field| {
+                        if (field.type == u128) {
+                            const offset = @offsetOf(T, field.name);
+                            if (offset % @sizeOf(u128) != 0) return false;
+
+                            if (@hasField(T, field.name ++ "_padding")) {
+                                if (offset % @sizeOf(u256) != 0) return false;
+                                if (offset + @sizeOf(u128) !=
+                                    @offsetOf(T, field.name ++ "_padding"))
+                                {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+
+                    var offset = 0;
+                    for (info.fields) |field| {
+                        const field_offset = @offsetOf(T, field.name);
+                        if (offset != field_offset) return false;
+                        offset += @sizeOf(field.type);
+                    }
+                    return offset == @sizeOf(T);
+                },
+                .@"packed" => return @bitSizeOf(T) == 8 * @sizeOf(T),
+            }
+        },
+        .@"enum" => |info| {
+            maybe(info.is_exhaustive);
+            return no_padding(info.tag_type);
+        },
+        .pointer => return false,
+        .@"union" => return false,
+        else => return false,
+    };
+}
+
+test no_padding {
+    comptime for (.{
+        u8,
+        extern struct { x: u8 },
+        packed struct { x: u7, y: u1 },
+        extern struct { x: extern struct { y: u64, z: u64 } },
+        enum(u8) { x },
+    }) |T| {
+        assert(no_padding(T));
+    };
+
+    comptime for (.{
+        u7,
+        struct { x: u7 },
+        struct { x: u8 },
+        struct { x: u64, y: u32 },
+        extern struct { x: extern struct { y: u64, z: u32 } },
+        packed struct { x: u7 },
+        enum(u7) { x },
+    }) |T| {
+        assert(!no_padding(T));
+    };
+}
+
+pub inline fn hash_inline(value: anytype) u64 {
+    comptime {
+        assert(no_padding(@TypeOf(value)));
+        assert(has_unique_representation(@TypeOf(value)));
+    }
+    return low_level_hash(0, switch (@typeInfo(@TypeOf(value))) {
+        .@"struct", .int => std.mem.asBytes(&value),
+        else => @compileError("unsupported hashing for " ++ @typeName(@TypeOf(value))),
+    });
+}
+
+/// Inline version of Google Abseil "LowLevelHash" (inspired by wyhash).
+/// https://github.com/abseil/abseil-cpp/blob/master/absl/hash/internal/low_level_hash.cc
+inline fn low_level_hash(seed: u64, input: anytype) u64 {
+    const salt = [_]u64{
+        0xa0761d6478bd642f,
+        0xe7037ed1a0b428db,
+        0x8ebc6af09c88c6e3,
+        0x589965cc75374cc3,
+        0x1d8e4e27c47d124f,
+    };
+
+    var in: []const u8 = input;
+    var state = seed ^ salt[0];
+    const starting_len = input.len;
+
+    if (in.len > 64) {
+        var dup = [_]u64{ state, state };
+        defer state = dup[0] ^ dup[1];
+
+        while (in.len > 64) : (in = in[64..]) {
+            for (@as([2][4]u64, @bitCast(in[0..64].*)), 0..) |chunk, i| {
+                const mix1 = @as(u128, chunk[0] ^ salt[(i * 2) + 1]) *% (chunk[1] ^ dup[i]);
+                const mix2 = @as(u128, chunk[2] ^ salt[(i * 2) + 2]) *% (chunk[3] ^ dup[i]);
+                dup[i] = @as(u64, @truncate(mix1 ^ (mix1 >> 64)));
+                dup[i] ^= @as(u64, @truncate(mix2 ^ (mix2 >> 64)));
+            }
+        }
+    }
+
+    while (in.len > 16) : (in = in[16..]) {
+        const chunk = @as([2]u64, @bitCast(in[0..16].*));
+        const mixed = @as(u128, chunk[0] ^ salt[1]) *% (chunk[1] ^ state);
+        state = @as(u64, @truncate(mixed ^ (mixed >> 64)));
+    }
+
+    var chunk: [2]u64 = .{ 0, 0 };
+    if (in.len > 8) {
+        chunk[0] = @as(u64, @bitCast(in[0..8].*));
+        chunk[1] = @as(u64, @bitCast(in[in.len - 8 ..][0..8].*));
+    } else if (in.len > 3) {
+        chunk[0] = @as(u32, @bitCast(in[0..4].*));
+        chunk[1] = @as(u32, @bitCast(in[in.len - 4 ..][0..4].*));
+    } else if (in.len > 0) {
+        chunk[0] = (@as(u64, in[0]) << 16) | (@as(u64, in[in.len / 2]) << 8) | in[in.len - 1];
+    }
+
+    var mixed = @as(u128, chunk[0] ^ salt[1]) *% (chunk[1] ^ state);
+    mixed = @as(u64, @truncate(mixed ^ (mixed >> 64)));
+    mixed *%= (@as(u64, starting_len) ^ salt[1]);
+    return @as(u64, @truncate(mixed ^ (mixed >> 64)));
+}
+
+test "hash_inline" {
+    for (@import("testing/low_level_hash_vectors.zig").cases) |case| {
+        var buffer: [0x100]u8 = undefined;
+
+        const b64 = std.base64.standard;
+        const input = buffer[0..try b64.Decoder.calcSizeForSlice(case.b64)];
+        try b64.Decoder.decode(input, case.b64);
+
+        const hash = low_level_hash(case.seed, input);
+        try std.testing.expectEqual(case.hash, hash);
+    }
+}
+
+/// Returns a copy of `base` with fields changed according to `diff`.
+///
+/// Intended exclusively for table-driven prototype-based tests. Write
+/// updates explicitly in production code.
+pub fn update(base: anytype, diff: anytype) @TypeOf(base) {
+    assert(builtin.is_test);
+    assert(@typeInfo(@TypeOf(base)) == .@"struct");
+
+    var updated = base;
+    inline for (std.meta.fields(@TypeOf(diff))) |f| {
+        @field(updated, f.name) = @field(diff, f.name);
+    }
+    return updated;
+}
+
+// std.SemanticVersion requires there be no extra characters after the
+// major/minor/patch numbers. But when we try to parse `uname
+// --kernel-release` (note: while Linux doesn't follow semantic
+// versioning, it doesn't violate it either), some distributions have
+// extra characters, such as this Fedora one: 6.3.8-100.fc37.x86_64, and
+// this WSL one has more than three dots:
+// 5.15.90.1-microsoft-standard-WSL2.
+pub fn parse_dirty_semver(dirty_release: []const u8) !std.SemanticVersion {
+    const release = blk: {
+        var last_valid_version_character_index: usize = 0;
+        var dots_found: u8 = 0;
+        for (dirty_release) |c| {
+            if (c == '.') dots_found += 1;
+            if (dots_found == 3) {
+                break;
+            }
+
+            if (c == '.' or (c >= '0' and c <= '9')) {
+                last_valid_version_character_index += 1;
+                continue;
+            }
+
+            break;
+        }
+
+        break :blk dirty_release[0..last_valid_version_character_index];
+    };
+
+    return std.SemanticVersion.parse(release);
+}
+
+test "stdx.zig: parse_dirty_semver" {
+    const SemverTestCase = struct {
+        dirty_release: []const u8,
+        expected_version: std.SemanticVersion,
+    };
+
+    const cases = &[_]SemverTestCase{
+        .{
+            .dirty_release = "1.2.3",
+            .expected_version = std.SemanticVersion{ .major = 1, .minor = 2, .patch = 3 },
+        },
+        .{
+            .dirty_release = "1001.843.909",
+            .expected_version = std.SemanticVersion{ .major = 1001, .minor = 843, .patch = 909 },
+        },
+        .{
+            .dirty_release = "6.3.8-100.fc37.x86_64",
+            .expected_version = std.SemanticVersion{ .major = 6, .minor = 3, .patch = 8 },
+        },
+        .{
+            .dirty_release = "5.15.90.1-microsoft-standard-WSL2",
+            .expected_version = std.SemanticVersion{ .major = 5, .minor = 15, .patch = 90 },
+        },
+    };
+    for (cases) |case| {
+        const version = try parse_dirty_semver(case.dirty_release);
+        try std.testing.expectEqual(case.expected_version, version);
+    }
+}
+
+// TODO(zig): std doesn't have the statfs / fstatfs syscalls to get the type of a filesystem.
+// Once those are available, this can be removed.
+// The `statfs` definition used by the Linux kernel, and the magic number for tmpfs, from
+// `man 2 fstatfs`.
+const fsblkcnt64_t = u64;
+const fsfilcnt64_t = u64;
+const fsword_t = i64;
+const fsid_t = u64;
+
+pub const TmpfsMagic = 0x01021994;
+pub const StatFs = extern struct {
+    f_type: fsword_t,
+    f_bsize: fsword_t,
+    f_blocks: fsblkcnt64_t,
+    f_bfree: fsblkcnt64_t,
+    f_bavail: fsblkcnt64_t,
+    f_files: fsfilcnt64_t,
+    f_ffree: fsfilcnt64_t,
+    f_fsid: fsid_t,
+    f_namelen: fsword_t,
+    f_frsize: fsword_t,
+    f_flags: fsword_t,
+    f_spare: [4]fsword_t,
+};
+
+pub fn fstatfs(fd: i32, statfs_buf: *StatFs) usize {
+    return std.os.linux.syscall2(
+        if (@hasField(std.os.linux.SYS, "fstatfs64")) .fstatfs64 else .fstatfs,
+        @as(usize, @bitCast(@as(isize, fd))),
+        @intFromPtr(statfs_buf),
+    );
+}
+
+/// True if every value of the type `T` has a unique bit pattern representing it.
+/// In other words, `T` has no unused bits and no padding.
+pub fn has_unique_representation(comptime T: type) bool {
+    switch (@typeInfo(T)) {
+        else => return false, // TODO can we know if it's true for some of these types ?
+
+        .@"enum",
+        .error_set,
+        .@"fn",
+        => return true,
+
+        .bool => return false,
+
+        .int => |info| return @sizeOf(T) * 8 == info.bits,
+
+        .pointer => |info| return info.size != .slice,
+
+        .array => |info| return comptime has_unique_representation(info.child),
+
+        .@"struct" => |info| {
+            // Only consider packed structs unique if they are byte aligned.
+            if (info.backing_integer) |backing_integer| {
+                return @sizeOf(T) * 8 == @bitSizeOf(backing_integer);
+            }
+
+            var sum_size = @as(usize, 0);
+
+            inline for (info.fields) |field| {
+                const FieldType = field.type;
+                if (comptime !has_unique_representation(FieldType)) return false;
+                sum_size += @sizeOf(FieldType);
+            }
+
+            return @sizeOf(T) == sum_size;
+        },
+
+        .vector => |info| return comptime has_unique_representation(info.child) and
+            @sizeOf(T) == @sizeOf(info.child) * info.len,
+    }
+}
+
+// Test vectors mostly from upstream, with some added to test the packed struct case.
+test "has_unique_representation" {
+    const TestStruct1 = struct {
+        a: u32,
+        b: u32,
+    };
+
+    try std.testing.expect(has_unique_representation(TestStruct1));
+
+    const TestStruct2 = struct {
+        a: u32,
+        b: u16,
+    };
+
+    try std.testing.expect(!has_unique_representation(TestStruct2));
+
+    const TestStruct3 = struct {
+        a: u32,
+        b: u32,
+    };
+
+    try std.testing.expect(has_unique_representation(TestStruct3));
+
+    const TestStruct4 = struct { a: []const u8 };
+
+    try std.testing.expect(!has_unique_representation(TestStruct4));
+
+    const TestStruct5 = struct { a: TestStruct4 };
+
+    try std.testing.expect(!has_unique_representation(TestStruct5));
+
+    const TestStruct6 = packed struct {
+        a: u32,
+        b: u31,
+    };
+
+    try std.testing.expect(!has_unique_representation(TestStruct6));
+
+    const TestStruct7 = struct {
+        a: u64,
+        b: TestStruct6,
+    };
+
+    try std.testing.expect(!has_unique_representation(TestStruct7));
+
+    const TestStruct8 = packed struct {
+        a: u32,
+        b: u32,
+    };
+
+    try std.testing.expect(has_unique_representation(TestStruct8));
+
+    const TestStruct9 = struct {
+        a: u64,
+        b: TestStruct8,
+    };
+
+    try std.testing.expect(has_unique_representation(TestStruct9));
+
+    const TestStruct10 = packed struct {
+        a: TestStruct8,
+        b: TestStruct8,
+    };
+
+    try std.testing.expect(has_unique_representation(TestStruct10));
+
+    const TestUnion1 = packed union {
+        a: u32,
+        b: u16,
+    };
+
+    try std.testing.expect(!has_unique_representation(TestUnion1));
+
+    const TestUnion2 = extern union {
+        a: u32,
+        b: u16,
+    };
+
+    try std.testing.expect(!has_unique_representation(TestUnion2));
+
+    const TestUnion3 = union {
+        a: u32,
+        b: u16,
+    };
+
+    try std.testing.expect(!has_unique_representation(TestUnion3));
+
+    const TestUnion4 = union(enum) {
+        a: u32,
+        b: u16,
+    };
+
+    try std.testing.expect(!has_unique_representation(TestUnion4));
+
+    inline for ([_]type{ i0, u8, i16, u32, i64 }) |T| {
+        try std.testing.expect(has_unique_representation(T));
+    }
+    inline for ([_]type{ i1, u9, i17, u33, i24 }) |T| {
+        try std.testing.expect(!has_unique_representation(T));
+    }
+
+    try std.testing.expect(!has_unique_representation([]u8));
+    try std.testing.expect(!has_unique_representation([]const u8));
+
+    try std.testing.expect(has_unique_representation(@Vector(4, u16)));
+}
+
+/// Construct a `union(Enum)` type, where each union "value" type is defined in terms of the
+/// variant.
+///
+/// That is, `EnumUnionType(Enum, TypeForVariant)` is equivalent to:
+///
+///   union(Enum) {
+///     // For every `e` in `Enum`:
+///     e: TypeForVariant(e),
+///   }
+///
+pub fn EnumUnionType(
+    comptime Enum: type,
+    comptime TypeForVariant: fn (comptime variant: Enum) type,
+) type {
+    const UnionField = std.builtin.Type.UnionField;
+
+    var fields: [std.enums.values(Enum).len]UnionField = undefined;
+    for (std.enums.values(Enum), 0..) |enum_variant, i| {
+        fields[i] = .{
+            .name = @tagName(enum_variant),
+            .type = TypeForVariant(enum_variant),
+            .alignment = @alignOf(TypeForVariant(enum_variant)),
+        };
+    }
+
+    return @Type(.{ .@"union" = .{
+        .layout = .auto,
+        .fields = &fields,
+        .decls = &.{},
+        .tag_type = Enum,
+    } });
+}
+
+/// Creates a slice to a comptime slice without triggering
+/// `error: runtime value contains reference to comptime var`
+pub fn comptime_slice(comptime slice: anytype, comptime len: usize) []const @TypeOf(slice[0]) {
+    return &@as([len]@TypeOf(slice[0]), slice[0..len].*);
+}
+
+/// Return a Formatter for a u64 value representing a file size.
+/// This formatter statically checks that the number is a multiple of 1024,
+/// and represents it using the IEC measurement units (KiB, MiB, GiB, ...).
+pub fn fmt_int_size_bin_exact(comptime value: u64) std.fmt.Formatter(format_int_size_bin_exact) {
+    comptime assert(value < 1024 or value % 1024 == 0);
+    return .{ .data = value };
+}
+
+fn format_int_size_bin_exact(
+    value: u64,
+    comptime fmt: []const u8,
+    options: std.fmt.FormatOptions,
+    writer: anytype,
+) !void {
+    _ = fmt;
+    if (value == 0) {
+        return std.fmt.formatBuf("0B", options, writer);
+    }
+
+    // The worst case in terms of space needed is 20 bytes,
+    // since `maxInt(u64)` is the highest number,
+    // + 3 bytes for the measurement units suffix.
+    comptime assert(std.fmt.comptimePrint("{}GiB", .{std.math.maxInt(u64)}).len == 23);
+    var buf: [23]u8 = undefined;
+
+    var magnitude: u8 = 0;
+    var value_unit = value;
+    while (value_unit % 1024 == 0) : (magnitude += 1) {
+        value_unit = @divExact(value_unit, 1024);
+    }
+
+    const magnitudes_iec = "BKMGTPEZY";
+    const suffix = magnitudes_iec[magnitude];
+
+    const length: usize = length: {
+        const i = std.fmt.formatIntBuf(&buf, value_unit, 10, .lower, .{});
+        if (magnitude == 0) {
+            buf[i] = suffix;
+            break :length i + 1;
+        } else {
+            buf[i..][0..3].* = [_]u8{ suffix, 'i', 'B' };
+            break :length i + 3;
+        }
+    };
+
+    return std.fmt.formatBuf(buf[0..length], options, writer);
+}
+
+test fmt_int_size_bin_exact {
+    try std.testing.expectFmt("0B", "{}", .{fmt_int_size_bin_exact(0)});
+    try std.testing.expectFmt("128B", "{}", .{fmt_int_size_bin_exact(128)});
+    try std.testing.expectFmt("8KiB", "{}", .{fmt_int_size_bin_exact(8 * 1024)});
+    try std.testing.expectFmt("1025KiB", "{}", .{fmt_int_size_bin_exact(1025 * 1024)});
+    try std.testing.expectFmt("12345KiB", "{}", .{fmt_int_size_bin_exact(12345 * 1024)});
+    try std.testing.expectFmt("42MiB", "{}", .{fmt_int_size_bin_exact(42 * 1024 * 1024)});
+    try std.testing.expectFmt("18014398509481983KiB", "{}", .{
+        fmt_int_size_bin_exact(std.math.maxInt(u64) - 1023),
+    });
+}
+
+/// Like std.fmt.bufPrint, but checks, at compile time, that the buffer is sufficiently large.
+pub fn array_print(
+    comptime n: usize,
+    buffer: *[n]u8,
+    comptime fmt: []const u8,
+    args: anytype,
+) []const u8 {
+    const Args = @TypeOf(args);
+    const ArgsStruct = @typeInfo(Args).@"struct";
+    comptime assert(ArgsStruct.is_tuple);
+
+    comptime {
+        var args_worst_case: Args = undefined;
+        for (ArgsStruct.fields, 0..) |field, index| {
+            const arg_worst_case = switch (field.type) {
+                u64 => std.math.maxInt(field.type),
+                else => @compileError("array_print: unhandled type"),
+            };
+            args_worst_case[index] = arg_worst_case;
+        }
+        const buffer_size = std.fmt.count(fmt, args_worst_case);
+        assert(n >= buffer_size); // array_print buffer too small
+    }
+
+    return std.fmt.bufPrint(buffer, fmt, args) catch |err| switch (err) {
+        error.NoSpaceLeft => unreachable,
+    };
+}
+
+/// A moment in time not anchored to any particular epoch.
+///
+/// The absolute value of `ns` is meaningless, but it is possible to compute `Duration` between
+/// two `Instant`s sourced from the same clock.
+///
+/// See also `DateTimeUTC`.
+pub const Instant = struct {
+    ns: u64,
+
+    pub fn add(now: Instant, duration: Duration) Instant {
+        return .{ .ns = now.ns + duration.ns };
+    }
+
+    pub fn duration_since(now: Instant, earlier: Instant) Duration {
+        assert(now.ns >= earlier.ns);
+        const elapsed_ns = now.ns - earlier.ns;
+        return .{ .ns = elapsed_ns };
+    }
+};
+
+/// Non-negative time difference between two `Instant`s.
+pub const Duration = struct {
+    ns: u64,
+
+    pub fn ms(amount_ms: u64) Duration {
+        return .{ .ns = amount_ms * std.time.ns_per_ms };
+    }
+
+    pub fn seconds(amount_seconds: u64) Duration {
+        return .{ .ns = amount_seconds * std.time.ns_per_s };
+    }
+
+    pub fn minutes(amount_minutes: u64) Duration {
+        return .{ .ns = amount_minutes * std.time.ns_per_min };
+    }
+
+    // Duration in microseconds, μs, 1/1_000_000 of a second.
+    pub fn to_us(duration: Duration) u64 {
+        return @divFloor(duration.ns, std.time.ns_per_us);
+    }
+
+    // Duration in milliseconds, ms, 1/1_000 of a second.
+    pub fn to_ms(duration: Duration) u64 {
+        return @divFloor(duration.ns, std.time.ns_per_ms);
+    }
+
+    pub fn min(lhs: Duration, rhs: Duration) Duration {
+        return .{ .ns = @min(lhs.ns, rhs.ns) };
+    }
+
+    pub fn max(lhs: Duration, rhs: Duration) Duration {
+        return .{ .ns = @max(lhs.ns, rhs.ns) };
+    }
+
+    pub const sort = struct {
+        pub fn asc(ctx: void, lhs: Duration, rhs: Duration) bool {
+            return std.sort.asc(u64)(ctx, lhs.ns, rhs.ns);
+        }
+    };
+
+    pub fn format(
+        duration: Duration,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        try std.fmt.fmtDuration(duration.ns).format(fmt, options, writer);
+    }
+
+    pub fn parse_flag_value(string: []const u8) union(enum) { ok: Duration, err: []const u8 } {
+        if (string.len == 0) return .{ .err = "expected a duration, but found nothing" };
+
+        var duration_ns: u64 = 0;
+
+        var string_remaining = string;
+        while (string_remaining.len > 0) {
+            const value_size = for (string_remaining, 0..) |character, i| {
+                if (!std.ascii.isDigit(character)) break i;
+            } else return .{ .err = "missing unit; must be one of: y/w/d/h/m/s/ms/us/ns" };
+            if (value_size == 0) return .{ .err = "missing value" };
+
+            const value = std.fmt.parseInt(u64, string_remaining[0..value_size], 10) catch |err| {
+                switch (err) {
+                    error.Overflow => return .{ .err = "integer overflow" },
+                    error.InvalidCharacter => unreachable,
+                }
+            };
+
+            for ([_]struct { ns: u64, label: []const u8 }{
+                .{ .ns = 1, .label = "ns" },
+                .{ .ns = std.time.ns_per_us, .label = "us" },
+                .{ .ns = std.time.ns_per_ms, .label = "ms" },
+                .{ .ns = std.time.ns_per_s, .label = "s" },
+                .{ .ns = std.time.ns_per_min, .label = "m" },
+                .{ .ns = std.time.ns_per_hour, .label = "h" },
+                .{ .ns = std.time.ns_per_day, .label = "d" },
+                .{ .ns = std.time.ns_per_week, .label = "w" },
+                .{ .ns = std.time.ns_per_day * 365, .label = "y" },
+            }) |unit| {
+                if (cut_prefix(string_remaining[value_size..], unit.label)) |suffix| {
+                    duration_ns += unit.ns * value;
+                    string_remaining = suffix;
+                    break;
+                }
+            } else {
+                return .{ .err = "unknown unit; must be one of: y/w/d/h/m/s/ms/us/ns" };
+            }
+        }
+        return .{ .ok = .{ .ns = duration_ns } };
+    }
+};
+
+test "Instant/Duration" {
+    const instant_1: Instant = .{ .ns = 100 * std.time.ns_per_day };
+    const instant_2: Instant = .{ .ns = 100 * std.time.ns_per_day + std.time.ns_per_s };
+    assert(instant_1.duration_since(instant_1).ns == 0);
+    assert(instant_2.duration_since(instant_1).ns == std.time.ns_per_s);
+
+    const duration = instant_2.duration_since(instant_1);
+    assert(duration.ns == 1_000_000_000);
+    assert(duration.to_us() == 1_000_000);
+    assert(duration.to_ms() == 1_000);
+
+    assert(Duration.ms(1).ns == std.time.ns_per_ms);
+    assert(Duration.seconds(1).ns == std.time.ns_per_s);
+    assert(Duration.minutes(1).ns == std.time.ns_per_min);
+}
+
+test "Duration.parse_flag_value" {
+    for ([_]struct { []const u8, u64 }{
+        .{ "1h", std.time.ns_per_hour },
+        .{ "1m", std.time.ns_per_min },
+        .{ "1h2m", std.time.ns_per_hour + 2 * std.time.ns_per_min },
+        .{ "1ms2us3ns", std.time.ns_per_ms + 2 * std.time.ns_per_us + 3 },
+    }) |pair| {
+        try std.testing.expectEqual(Duration.parse_flag_value(pair.@"0").ok.ns, pair.@"1");
+    }
+
+    for ([_][]const u8{
+        "",
+        "h",
+        "1",
+        "h1",
+        "1H",
+        "1h2x",
+        "1h 2m",
+    }) |string| {
+        try std.testing.expect(Duration.parse_flag_value(string) == .err);
+    }
+}
+
+/// DateTime in UTC, intended primarily for logging.
+///
+/// NB: this is a pure function of a timestamp. To convert timestamp to UTC, no knowledge of
+/// timezones or leap seconds is necessary.
+pub const DateTimeUTC = struct {
+    year: u16,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+    millisecond: u16,
+
+    pub fn now() DateTimeUTC {
+        const timestamp_ms = std.time.milliTimestamp();
+        assert(timestamp_ms > 0);
+        return DateTimeUTC.from_timestamp_ms(@intCast(timestamp_ms));
+    }
+
+    pub fn from_timestamp_s(timestamp_s: u64) DateTimeUTC {
+        return DateTimeUTC.from_timestamp_ms(timestamp_s * std.time.ms_per_s);
+    }
+
+    pub fn from_timestamp_ms(timestamp_ms: u64) DateTimeUTC {
+        const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @divTrunc(timestamp_ms, 1000) };
+        const year_day = epoch_seconds.getEpochDay().calculateYearDay();
+        const month_day = year_day.calculateMonthDay();
+        const time = epoch_seconds.getDaySeconds();
+
+        return DateTimeUTC{
+            .year = year_day.year,
+            .month = month_day.month.numeric(),
+            .day = month_day.day_index + 1,
+            .hour = time.getHoursIntoDay(),
+            .minute = time.getMinutesIntoHour(),
+            .second = time.getSecondsIntoMinute(),
+            .millisecond = @intCast(@mod(timestamp_ms, 1000)),
+        };
+    }
+
+    pub fn format(
+        datetime: DateTimeUTC,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        try writer.print("{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z", .{
+            datetime.year,
+            datetime.month,
+            datetime.day,
+            datetime.hour,
+            datetime.minute,
+            datetime.second,
+            datetime.millisecond,
+        });
+    }
+};
+
+/// Like std.posix's `unexpectedErrno()` but log unconditionally, not just when mode=Debug.
+/// The added `label` argument works around the absence of stack traces in ReleaseSafe builds.
+pub fn unexpected_errno(label: []const u8, err: std.posix.system.E) std.posix.UnexpectedError {
+    log.scoped(.stdx).err("unexpected errno: {s}: code={d} name={?s}", .{
+        label,
+        @intFromEnum(err),
+        std.enums.tagName(std.posix.system.E, err),
+    });
+
+    if (builtin.mode == .Debug) {
+        std.debug.dumpCurrentStackTrace(null);
+    }
+    return error.Unexpected;
+}
+
+pub fn unique_u128() u128 {
+    const value = std.crypto.random.int(u128);
+
+    // Broken CSPRNG is the likeliest explanation for zero or all ones.
+    assert(value != 0);
+    assert(value != std.math.maxInt(u128));
+
+    return value;
+}
+
+/// NB: intended for parsing CLI arguments where we care to preserve the user-specified unit.
+/// Use `size: u64` for all other use-cases.
+pub const ByteSize = struct {
+    value: u64,
+    unit: Unit = .bytes,
+
+    const Unit = enum(u64) {
+        bytes = 1,
+        kib = KiB,
+        mib = MiB,
+        gib = GiB,
+        tib = TiB,
+    };
+
+    pub fn parse_flag_value(value: []const u8) union(enum) { ok: ByteSize, err: []const u8 } {
+        assert(value.len != 0);
+
+        const split: struct {
+            value_input: []const u8,
+            unit_input: []const u8,
+        } = split: for (0..value.len) |i| {
+            if (!std.ascii.isDigit(value[i]) and value[i] != '_') {
+                break :split .{
+                    .value_input = value[0..i],
+                    .unit_input = value[i..],
+                };
+            }
+        } else {
+            break :split .{
+                .value_input = value,
+                .unit_input = "",
+            };
+        };
+
+        const amount = std.fmt.parseUnsigned(u64, split.value_input, 10) catch |err| {
+            switch (err) {
+                error.Overflow => {
+                    return .{ .err = "value exceeds 64-bit unsigned integer:" };
+                },
+                error.InvalidCharacter => {
+                    // The only case this can happen is for the empty string
+                    return .{ .err = "expected a size, but found:" };
+                },
+            }
+        };
+
+        const unit = if (split.unit_input.len > 0)
+            unit: inline for (comptime std.enums.values(Unit)) |tag| {
+                if (std.ascii.eqlIgnoreCase(split.unit_input, @tagName(tag))) {
+                    break :unit tag;
+                }
+            } else {
+                return .{ .err = "invalid unit in size, needed KiB, MiB, GiB or TiB:" };
+            }
+        else
+            Unit.bytes;
+
+        _ = std.math.mul(u64, amount, @intFromEnum(unit)) catch {
+            return .{ .err = "size in bytes exceeds 64-bit unsigned integer:" };
+        };
+
+        return .{ .ok = .{ .value = amount, .unit = unit } };
+    }
+
+    pub fn bytes(size: *const ByteSize) u64 {
+        return std.math.mul(
+            u64,
+            size.value,
+            @intFromEnum(size.unit),
+        ) catch unreachable;
+    }
+
+    pub fn suffix(size: *const ByteSize) []const u8 {
+        return switch (size.unit) {
+            .bytes => "",
+            .kib => "KiB",
+            .mib => "MiB",
+            .gib => "GiB",
+            .tib => "TiB",
+        };
+    }
+};
+
+test "ByteSize.parse_flag_value" {
+    const kib = 1024;
+    const mib = kib * 1024;
+    const gib = mib * 1024;
+    const tib = gib * 1024;
+
+    const cases = .{
+        .{ 0, "0", 0, ByteSize.Unit.bytes },
+        .{ 1, "1", 1, ByteSize.Unit.bytes },
+        .{ 140737488355328, "140737488355328", 140737488355328, ByteSize.Unit.bytes },
+        .{ 140737488355328, "128TiB", 128, ByteSize.Unit.tib },
+        .{ 1 * tib, "1TiB", 1, ByteSize.Unit.tib },
+        .{ 10 * tib, "10tib", 10, ByteSize.Unit.tib },
+        .{ 1 * gib, "1GiB", 1, ByteSize.Unit.gib },
+        .{ 10 * gib, "10gib", 10, ByteSize.Unit.gib },
+        .{ 1 * mib, "1MiB", 1, ByteSize.Unit.mib },
+        .{ 10 * mib, "10mib", 10, ByteSize.Unit.mib },
+        .{ 1 * kib, "1KiB", 1, ByteSize.Unit.kib },
+        .{ 10 * kib, "10kib", 10, ByteSize.Unit.kib },
+        .{ 10 * kib, "1_0kib", 10, ByteSize.Unit.kib },
+    };
+
+    inline for (cases) |case| {
+        const bytes = case[0];
+        const input = case[1];
+        const unit_val = case[2];
+        const unit = case[3];
+        const result = ByteSize.parse_flag_value(input);
+        if (result == .err) {
+            std.debug.panic("expected ok, got: '{s}'", .{result.err});
+        }
+        const got = result.ok;
+        assert(bytes == got.bytes());
+        assert(unit_val == got.value);
+        assert(unit == got.unit);
+    }
+}
+
+// Fast alternative to modulo reduction (Note, it is not the same as modulo).
+// See https://github.com/lemire/fastrange/ and
+// https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction/
+pub inline fn fastrange(word: u64, p: u64) u64 {
+    const lword: u128 = @intCast(word);
+    const lp: u128 = @intCast(p);
+    const ln: u128 = lword *% lp;
+    return @truncate(ln >> 64);
+}
+
+const snap = Snap.snap_fn("src/stdx");
+
+test fastrange {
+    var prng = PRNG.from_seed(42);
+    var distribution: [8]u32 = @splat(0);
+    for (0..10_000) |_| {
+        const key = prng.int(u64);
+        distribution[fastrange(key, 8)] += 1;
+    }
+    try snap(@src(),
+        \\{ 1263, 1273, 1244, 1226, 1228, 1276, 1169, 1321 }
+    ).diff_fmt("{d}", .{distribution});
+}
+
+// This test shows that fastrange is not equivalent to modulo, but rather an alternative method.
+// It is best used uniformly distributed hashes or random numbers across the full range.
+test "fastrange not modulo" {
+    var distribution: [8]u32 = @splat(0);
+    for (0..10_000) |key| {
+        distribution[fastrange(key, 8)] += 1;
+    }
+    try snap(@src(),
+        \\{ 10000, 0, 0, 0, 0, 0, 0, 0 }
+    ).diff_fmt("{d}", .{distribution});
+}
+
+comptime {
+    _ = @import("aegis.zig");
+    _ = @import("bit_set.zig");
+    _ = @import("bounded_array.zig");
+    _ = @import("flags.zig");
+    _ = @import("prng.zig");
+    _ = @import("ring_buffer.zig");
+    _ = @import("sort_test.zig");
+    _ = @import("stdx.zig");
+    _ = @import("testing/snaptest.zig");
+    _ = @import("zipfian.zig");
+    _ = @import("unshare.zig");
+    _ = @import("radix.zig");
+}
