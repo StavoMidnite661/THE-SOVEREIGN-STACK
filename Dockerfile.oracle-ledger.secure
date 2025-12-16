@@ -1,0 +1,86 @@
+# =============================================================================
+# SOVR Foundation - Oracle Ledger Secure Dockerfile
+# Production-ready Docker image with security hardening
+# =============================================================================
+
+# Use official Node.js 20 LTS as base image
+FROM node:20-alpine AS builder
+
+# Install security updates and build tools
+RUN apk update && apk upgrade && apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/cache/apk/*
+
+# Create app user with no root privileges
+RUN addgroup -g 1001 -S sovr && \
+    adduser -S sovr -u 1001 -G sovr
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install dependencies
+RUN npm ci --only=production && npm cache clean --force
+
+# Copy source code
+COPY . .
+
+# Build TypeScript
+RUN npm run build || npx tsc
+
+# Security stage
+FROM node:20-alpine AS runtime
+
+# Install security updates and runtime dependencies
+RUN apk update && apk upgrade && apk add --no-cache \
+    dumb-init \
+    curl \
+    && rm -rf /var/cache/apk/*
+
+# Create app user (non-root)
+RUN addgroup -g 1001 -S sovr && \
+    adduser -S sovr -u 1001 -G sovr
+
+# Set working directory
+WORKDIR /app
+
+# Create certificate directories
+RUN mkdir -p /app/certs && \
+    chown -R sovr:sovr /app
+
+# Copy built application from builder stage
+COPY --from=builder --chown=sovr:sovr /app/dist ./dist
+COPY --from=builder --chown=sovr:sovr /app/node_modules ./node_modules
+COPY --from=builder --chown=sovr:sovr /app/package*.json ./
+
+# Copy security scripts
+COPY --chown=sovr:sovr scripts/ ./scripts/
+
+# Set file permissions
+RUN chmod +x ./scripts/*.sh && \
+    chmod 600 /app/certs/*
+
+# Switch to non-root user
+USER sovr
+
+# Expose port (internal only)
+EXPOSE 3001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f --cacert /app/certs/ca.crt https://localhost:3001/health || exit 1
+
+# Environment variables
+ENV NODE_ENV=production
+ENV PORT=3001
+
+# Use dumb-init to handle signals properly
+ENTRYPOINT ["dumb-init", "--"]
+
+# Start application
+CMD ["node", "dist/server.js"]

@@ -1,0 +1,347 @@
+version: '3.8'
+
+services:
+  # =============================================================================
+  # TIGERBEETLE - Primary Ledger (INTERNAL NETWORK ONLY)
+  # =============================================================================
+  tigerbeetle:
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    command: ["start", "--skip-seeds", "--addresses=0.0.0.0:3000"]
+    # REMOVED: public port mapping - now internal only
+    volumes:
+      - tigerbeetle_data:/var/lib/tigerbeetle
+    environment:
+      - TB_ADDRESSES=0.0.0.0:3000
+      - TB_CLUSTER=0
+      - TB_AUTH_TOKEN=${TB_AUTH_TOKEN} # Add authentication token
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - sovr-internal-net # Internal network only
+
+  # =============================================================================
+  # POSTGRESQL - Journal Entries & Audit Trail (INTERNAL NETWORK ONLY)
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      # SECURITY FIX: Use environment variables instead of hardcoded credentials
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # Moved to secure environment variable
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+      # Additional security configurations
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_AUTH_METHOD: scram-sha-256
+    # REMOVED: public port mapping - now internal only
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # Add SSL configuration
+      - ./certs/postgres/server.crt:/etc/ssl/certs/server.crt:ro
+      - ./certs/postgres/server.key:/etc/ssl/private/server.key:ro
+    command: >
+      postgres
+      -c ssl=on
+      -c ssl_cert_file=/etc/ssl/certs/server.crt
+      -c ssl_key_file=/etc/ssl/private/server.key
+      -c log_statement=all
+      -c log_connections=on
+      -c log_disconnections=on
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sovr-internal-net
+
+  # =============================================================================
+  # REDIS - Hot Cache & Session Store (SECURED)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    # REMOVED: public port mapping - now internal only
+    volumes:
+      - redis_data:/data
+      - ./certs/redis/redis.crt:/etc/ssl/certs/redis.crt:ro
+      - ./certs/redis/redis.key:/etc/ssl/private/redis.key:ro
+    # SECURITY FIX: Added password protection and TLS configuration
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --tls-port 6380
+      --port 0
+      --tls-cert-file /etc/ssl/certs/redis.crt
+      --tls-key-file /etc/ssl/private/redis.key
+      --tls-ca-cert-file /etc/ssl/certs/ca.crt
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --protected-mode yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "--tls", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - sovr-internal-net
+
+  # =============================================================================
+  # ORACLE LEDGER MOCK SERVICE (mTLS SECURED)
+  # =============================================================================
+  oracle-ledger-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.oracle-ledger.secure
+    # REMOVED: public port mapping - now internal only
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6380
+      - TIGERBEETLE_ADDRESS=tigerbeetle:3000
+      # SECURITY: mTLS Configuration
+      - MTLS_ENABLED=true
+      - SSL_CERT_PATH=/app/certs/server.crt
+      - SSL_KEY_PATH=/app/certs/server.key
+      - SSL_CA_PATH=/app/certs/ca.crt
+      - JWT_SECRET=${JWT_SECRET}
+      - API_RATE_LIMIT=100
+      - REQUEST_SIGNING_ENABLED=true
+      - IDEMPOTENCY_ENABLED=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tigerbeetle:
+        condition: service_healthy
+    volumes:
+      - ./shared:/app/shared:ro
+      - ./certs/oracle-ledger:/app/certs:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--cacert", "/app/certs/ca.crt", "https://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - sovr-internal-net
+
+  # =============================================================================
+  # CREDIT TERMINAL API (INTERNAL SERVICE-TO-SERVICE AUTH)
+  # =============================================================================
+  credit-terminal:
+    build:
+      context: ./sovr_hybrid_engineV2
+      dockerfile: Dockerfile.api.secure
+    # REMOVED: public port mapping - now internal only
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - ORACLE_LEDGER_URL=https://oracle-ledger-mock:3001
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6380
+      - TIGERBEETLE_ADDRESS=tigerbeetle:3000
+      # SERVICE-TO-SERVICE AUTHENTICATION
+      - SERVICE_TOKEN=${SERVICE_TOKEN}
+      - MTLS_CLIENT_CERT_PATH=/app/certs/client.crt
+      - MTLS_CLIENT_KEY_PATH=/app/certs/client.key
+      - MTLS_CA_PATH=/app/certs/ca.crt
+    depends_on:
+      oracle-ledger-mock:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tigerbeetle:
+        condition: service_healthy
+    volumes:
+      - ./sovr_hybrid_engineV2:/app
+      - /app/node_modules
+      - ./certs/client:/app/certs:ro
+    networks:
+      - sovr-internal-net
+
+  # =============================================================================
+  # STUDIO APP (Next.js) - SECURED
+  # =============================================================================
+  studio:
+    build:
+      context: ./studio
+      dockerfile: Dockerfile.nextjs.secure
+    # REMOVED: public port mapping - now internal only
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - ORACLE_LEDGER_API_URL=https://oracle-ledger-mock:3001
+      - CREDIT_TERMINAL_URL=https://credit-terminal:3002
+      - NEXT_PUBLIC_ORACLE_LEDGER_URL=https://oracle-ledger-mock:3001
+      - NEXT_PUBLIC_CREDIT_TERMINAL_URL=https://credit-terminal:3002
+      # SECURITY: Internal service URLs only
+      - INTERNAL_ONLY=true
+    depends_on:
+      - oracle-ledger-mock
+      - credit-terminal
+    volumes:
+      - ./studio:/app
+      - /app/node_modules
+      - /app/.next
+      - ./certs/client:/app/certs:ro
+    networks:
+      - sovr-internal-net
+
+  # =============================================================================
+  # MONITORING STACK (SECURED)
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    # REMOVED: public port mapping - now internal only
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+      - ./certs/prometheus:/etc/ssl/certs:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+      - '--web.config.file=/etc/prometheus/web.yml'
+    networks:
+      - sovr-internal-net
+
+  grafana:
+    image: grafana/grafana:latest
+    # REMOVED: public port mapping - now internal only
+    environment:
+      # SECURITY FIX: Use environment variable instead of hardcoded password
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_SECURITY_SECRET_KEY=${GRAFANA_SECRET_KEY}
+      - GF_SERVER_ENABLE_GZIP=true
+      - GF_RENDERING_SERVER_URL=https://grafana-renderer:8081/render
+      - GF_LOG_FILTERS=rendering:debug
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./certs/grafana:/etc/ssl/certs:ro
+    networks:
+      - sovr-internal-net
+    depends_on:
+      - prometheus
+
+  # =============================================================================
+  # SECURE API GATEWAY (NEW)
+  # =============================================================================
+  api-gateway:
+    image: nginx:alpine
+    ports:
+      - "443:443" # Only HTTPS, no HTTP
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./certs/api-gateway:/etc/ssl/certs:ro
+    environment:
+      - NGINX_HOST=api.sovr.foundation
+      - NGINX_PORT=443
+    command: ["/bin/sh", "-c", "nginx -g 'daemon off;'"]
+    networks:
+      - sovr-internal-net
+      - sovr-external-net
+
+  # =============================================================================
+  # SECURE PGADMIN (OPTIONAL - FOR DEVELOPMENT ONLY)
+  # =============================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    # REMOVED: public port mapping - now internal only
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL}
+      # SECURITY FIX: Use environment variable instead of hardcoded password
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD}
+      - PGADMIN_LISTEN_PORT=80
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./certs/pgadmin:/etc/ssl/certs:ro
+    depends_on:
+      - postgres
+    networks:
+      - sovr-internal-net
+    profiles:
+      - dev # Only available in development profile
+
+  # =============================================================================
+  # MIGRATION & SEEDING SERVICE (SECURED)
+  # =============================================================================
+  migration:
+    build:
+      context: .
+      dockerfile: Dockerfile.migration.secure
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - SERVICE_TOKEN=${SERVICE_TOKEN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./certs/client:/app/certs:ro
+    networks:
+      - sovr-internal-net
+
+# =============================================================================
+# SECURE VOLUMES
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  tigerbeetle_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# =============================================================================
+# SECURE NETWORKS
+# =============================================================================
+networks:
+  sovr-internal-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+    driver_opts:
+      com.docker.network.bridge.name: sovr-internal
+      com.docker.network.driver.mtu: 1500
+  sovr-external-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+    driver_opts:
+      com.docker.network.bridge.name: sovr-external
