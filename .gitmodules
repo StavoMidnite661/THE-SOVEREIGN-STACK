@@ -1,0 +1,9 @@
+[submodule "FinSec Monitor"]
+	path = FinSec Monitor
+	url = ./FinSec Monitor
+[submodule "sovr_hybrid_engineV2"]
+	path = sovr_hybrid_engineV2
+	url = ./sovr_hybrid_engineV2
+[submodule "studio"]
+	path = studio
+	url = ./studio
