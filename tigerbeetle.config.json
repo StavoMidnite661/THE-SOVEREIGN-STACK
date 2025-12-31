@@ -1,0 +1,13 @@
+{
+  "cluster_id": 1,
+  "replication_factor": 3,
+  "cluster_size": 3,
+  "comment": "TigerBeetle is SOLE clearing authority - Mechanical truth for SOVR obligations",
+  "accounts": {
+    "comment": "These accounts exist in TigerBeetle FIRST - Narrative mirror observes AFTER clearing",
+    "1000": "Cash-ODFI-LLC",
+    "1010": "Cash-Vault-USDC",
+    "1050": "ACH-Settlement-Account",
+    "1060": "Stripe-Clearing-Account"
+  }
+}

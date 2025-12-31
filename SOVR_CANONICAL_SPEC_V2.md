@@ -1,4 +1,4 @@
-# SOVR CANONICAL SPECIFICATION
+# SOVR CANONICAL SPECIFICATION V2
 
 ## SYSTEM DEFINITION
 
@@ -336,6 +336,11 @@ No component above clearing may override components below it.
    - No "redemption in USD"
    - No unit-of-account privilege
 
+6. **Semantic Reversion**
+   - No reintroduction of payment language
+   - No balance mutation terminology
+   - No custody terminology
+
 ## RISK POSTURE
 
 ### Survival Properties
@@ -383,9 +388,18 @@ No component above clearing may override components below it.
    - Analytics broken
    - **Mitigation:** Read-only, no impact on clearing
 
+5. **Semantic Reversion**
+   - Reintroduction of payment, balance, or custody language
+   - **Impact:** System becomes narratively reclassified as fintech
+   - **Mitigation:** Language audits, operator retraining, document invalidation if violations persist
+
 ## MOMENT FIAT DROPS OUT
 
-Fiat becomes irrelevant the first time a cleared obligation is honored **without referencing a fiat unit of account**.
+Fiat becomes irrelevant at the moment a transfer is finalized by the clearing engine.
+
+**Named Event:** CLEARING_FINALIZED
+
+**State:** No external confirmation alters this state
 
 After this moment:
 - Fiat is optional
@@ -531,6 +545,12 @@ After this moment:
    - Restart if needed
    - **No impact on clearing**
 
+5. **Semantic Drift Detected**
+   - Identify violation
+   - Correct language
+   - Retrain operator
+   - Document incident
+
 ### Maintenance
 
 1. **Weekly**
@@ -631,6 +651,8 @@ SOVR is a **ledger-cleared obligation network** where value exists only as the r
 - [ ] No fiat dependency created
 - [ ] No central control established
 - [ ] System survival properties confirmed
+- [ ] Language discipline enforced
+- [ ] Semantic drift mitigation in place
 
 **Approved:** _________________________
 **Date:** _________________________

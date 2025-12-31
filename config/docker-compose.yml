@@ -1,0 +1,328 @@
+version: '3.8'
+
+services:
+  # =============================================================================
+  # TIGERBEETLE - SOLE MECHANICAL TRUTH (SOLE CLEARING AUTHORITY)
+  # ⚠️ THIS IS THE ONLY COMPONENT WITH CLEARING AUTHORITY
+  # 3-NODE REPLICATED CLUSTER FOR MECHANICAL TRUTH RELIABILITY
+  # =============================================================================
+  tigerbeetle-1:
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    command: ["start", "--addresses=0.0.0.0:3000"]
+    volumes:
+      - tigerbeetle_1_data:/var/lib/tigerbeetle
+    environment:
+      - TB_CLUSTER=1
+      - TB_REPLICA=0
+      - TB_ADDRESSES=tigerbeetle-1:3000,tigerbeetle-2:3000,tigerbeetle-3:3000
+    networks:
+      - sovr_internal
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  tigerbeetle-2:
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    command: ["start", "--addresses=0.0.0.0:3000"]
+    volumes:
+      - tigerbeetle_2_data:/var/lib/tigerbeetle
+    environment:
+      - TB_CLUSTER=1
+      - TB_REPLICA=1
+      - TB_ADDRESSES=tigerbeetle-1:3000,tigerbeetle-2:3000,tigerbeetle-3:3000
+    networks:
+      - sovr_internal
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  tigerbeetle-3:
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    command: ["start", "--addresses=0.0.0.0:3000"]
+    volumes:
+      - tigerbeetle_3_data:/var/lib/tigerbeetle
+    environment:
+      - TB_CLUSTER=1
+      - TB_REPLICA=2
+      - TB_ADDRESSES=tigerbeetle-1:3000,tigerbeetle-2:3000,tigerbeetle-3:3000
+    networks:
+      - sovr_internal
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # =============================================================================
+  # POSTGRESQL - NARRATIVE MIRROR PLACEHOLDER (OBSERVER-ONLY - NOT AUTHORITATIVE)
+  # ⚠️ NOT CURRENTLY WIRED INTO EXECUTION PATH
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    # REMOVED PUBLIC PORT EXPOSURE - CRITICAL SECURITY FIX
+    # ports:
+    #   - "5432:5432"  # COMMENTED OUT - Database only accessible via internal network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    networks:
+      - sovr_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================================
+  # REDIS - Hot Cache & Session Store (SECURED)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    # REMOVED PUBLIC PORT EXPOSURE - HIGH SECURITY FIX
+    # ports:
+    #   - "6379:6379"  # COMMENTED OUT - Redis only accessible via internal network
+    volumes:
+      - redis_data:/data
+    # CRITICAL FIX: Added password protection
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    networks:
+      - sovr_internal
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # =============================================================================
+  # ORACLE LEDGER MOCK SERVICE (SECURED)
+  # =============================================================================
+  oracle-ledger-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.oracle-ledger
+    # REMOVED PUBLIC PORT EXPOSURE
+    # ports:
+    #   - "3001:3001"  # COMMENTED OUT - Service only accessible via internal network
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - TIGERBEETLE_ADDRESS=tigerbeetle-1:3000
+    networks:
+      - sovr_internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tigerbeetle-1:
+        condition: service_healthy
+      tigerbeetle-2:
+        condition: service_healthy
+      tigerbeetle-3:
+        condition: service_healthy
+    volumes:
+      - ./shared:/app/shared:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # =============================================================================
+  # CREDIT TERMINAL API (SECURED)
+  # =============================================================================
+  credit-terminal:
+    build:
+      context: ./sovr_hybrid_engineV2
+      dockerfile: Dockerfile.api
+    # REMOVED PUBLIC PORT EXPOSURE
+    # ports:
+    #   - "3002:3002"  # COMMENTED OUT - API only accessible via internal network
+    environment:
+      - NODE_ENV=development
+      - PORT=3002
+      - ORACLE_LEDGER_URL=http://oracle-ledger-mock:3001
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - TIGERBEETLE_ADDRESS=tigerbeetle-1:3000
+    networks:
+      - sovr_internal
+    depends_on:
+      oracle-ledger-mock:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tigerbeetle-1:
+        condition: service_healthy
+      tigerbeetle-2:
+        condition: service_healthy
+      tigerbeetle-3:
+        condition: service_healthy
+    volumes:
+      - ./sovr_hybrid_engineV2:/app
+      - /app/node_modules
+    command: ["npm", "run", "dev"]
+
+  # =============================================================================
+  # STUDIO APP (Next.js) - SECURED
+  # =============================================================================
+  studio:
+    build:
+      context: ./studio
+      dockerfile: Dockerfile.nextjs
+    # REMOVED PUBLIC PORT EXPOSURE
+    # ports:
+    #   - "3003:3000"  # COMMENTED OUT - App only accessible via internal network
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - ORACLE_LEDGER_API_URL=http://oracle-ledger-mock:3001
+      - CREDIT_TERMINAL_URL=http://credit-terminal:3002
+      - NEXT_PUBLIC_ORACLE_LEDGER_URL=http://localhost:3001
+      - NEXT_PUBLIC_CREDIT_TERMINAL_URL=http://localhost:3002
+    networks:
+      - sovr_internal
+    depends_on:
+      - oracle-ledger-mock
+      - credit-terminal
+    volumes:
+      - ./studio:/app
+      - /app/node_modules
+      - /app/.next
+    command: ["npm", "run", "dev"]
+
+  # =============================================================================
+  # MONITORING STACK (SECURED)
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    # REMOVED PUBLIC PORT EXPOSURE
+    # ports:
+    #   - "9090:9090"  # COMMENTED OUT - Monitoring only accessible via internal network
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - sovr_internal
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    # REMOVED PUBLIC PORT EXPOSURE
+    # ports:
+    #   - "3004:3000"  # COMMENTED OUT - Grafana only accessible via internal network
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    networks:
+      - sovr_internal
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # =============================================================================
+  # TESTING & DEVELOPMENT TOOLS (SECURED)
+  # =============================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    # REMOVED PUBLIC PORT EXPOSURE
+    # ports:
+    #   - "8080:80"  # COMMENTED OUT - PgAdmin only accessible via internal network
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD}
+      - PGADMIN_LISTEN_PORT=80
+    networks:
+      - sovr_internal
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+
+  # =============================================================================
+  # MIGRATION & SEEDING SERVICE (SECURED)
+  # =============================================================================
+  migration:
+    build:
+      context: .
+      dockerfile: Dockerfile.migration
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    networks:
+      - sovr_internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/app/scripts:ro
+    command: ["node", "scripts/migrate-and-seed.js"]
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  tigerbeetle_1_data:
+    driver: local
+  tigerbeetle_2_data:
+    driver: local
+  tigerbeetle_3_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# =============================================================================
+# NETWORKS - SECURE INTERNAL NETWORK ONLY
+# =============================================================================
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+  # SECURE INTERNAL NETWORK FOR ALL SERVICES
+  sovr_internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
