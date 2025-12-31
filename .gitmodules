@@ -1,9 +1,1 @@
-[submodule "FinSec Monitor"]
-	path = FinSec Monitor
-	url = https://github.com/StavoMidnite661/FinSec-Monitor.git
-[submodule "sovr_hybrid_engineV2"]
-	path = sovr_hybrid_engineV2
-	url = https://github.com/StavoMidnite661/Credit-Terminal.git
-[submodule "studio"]
-	path = studio
-	url = https://github.com/StavoMidnite661/studio.git
+
