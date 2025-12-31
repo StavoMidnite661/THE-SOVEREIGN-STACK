@@ -1,0 +1,462 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { 
+  Smartphone, 
+  MapPin, 
+  Clock, 
+  AlertTriangle, 
+  CheckCircle, 
+  Zap,
+  Truck,
+  WifiOff,
+  Wifi,
+  Heart,
+  Shield,
+  Timer,
+  Star,
+  Navigation,
+  Phone,
+  RefreshCw
+} from 'lucide-react';
+
+interface SurvivalItem {
+  id: string;
+  name: string;
+  unitCost: number;
+  calories: number;
+  description: string;
+  inStock: boolean;
+  deliveryRate: number;
+  lastRestocked: string;
+  estimatedDeliveryTime: number; // minutes
+  honoringAgents: HonoringAgent[];
+}
+
+interface HonoringAgent {
+  id: string;
+  name: string;
+  type: 'grocery' | 'delivery' | 'emergency';
+  rating: number;
+  deliveryTime: number; // minutes
+  distance: number; // miles
+  isOnline: boolean;
+  reliability: number; // 0-100
+  emergencyAvailable: boolean;
+  location: { lat: number; lng: number };
+}
+
+interface SurvivalStatus {
+  currentCalories: number;
+  dailyTarget: number;
+  daysOfSurvival: number;
+  riskLevel: 'safe' | 'caution' | 'critical';
+  bundleCost: number;
+  bundleCalories: number;
+  lastPurchase: string;
+  nextRestock: string;
+}
+
+interface MobileSurvivalWorkflowsProps {
+  survivalItems: SurvivalItem[];
+  survivalStatus: SurvivalStatus;
+  userLocation: { lat: number; lng: number };
+  onAuthorizeItem: (itemId: string, agentId: string) => Promise<void>;
+  onAuthorizeBundle: (agents: Record<string, string>) => Promise<void>;
+  onRequestEmergencyDelivery: () => Promise<void>;
+  className?: string;
+}
+
+export default function MobileSurvivalWorkflows({
+  survivalItems,
+  survivalStatus,
+  userLocation,
+  onAuthorizeItem,
+  onAuthorizeBundle,
+  onRequestEmergencyDelivery,
+  className = '',
+}: MobileSurvivalWorkflowsProps) {
+  const [selectedItems, setSelectedItems] = useState<Record<string, string>>({});
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isAuthorizing, setIsAuthorizing] = useState(false);
+  const [emergencyMode, setEmergencyMode] = useState(false);
+  const [nearbyAgents, setNearbyAgents] = useState<HonoringAgent[]>([]);
+
+  // Mock nearby agents (in real implementation, this would use location services)
+  const mockNearbyAgents: HonoringAgent[] = [
+    {
+      id: 'instacart-1',
+      name: 'Instacart',
+      type: 'delivery',
+      rating: 4.8,
+      deliveryTime: 45,
+      distance: 2.1,
+      isOnline: true,
+      reliability: 94,
+      emergencyAvailable: true,
+      location: { lat: userLocation.lat, lng: userLocation.lng }
+    },
+    {
+      id: 'local-grocery-1',
+      name: 'Local Market',
+      type: 'grocery',
+      rating: 4.5,
+      deliveryTime: 30,
+      distance: 1.8,
+      isOnline: true,
+      reliability: 87,
+      emergencyAvailable: false,
+      location: { lat: userLocation.lat + 0.01, lng: userLocation.lng - 0.01 }
+    },
+    {
+      id: 'emergency-delivery-1',
+      name: 'Emergency Supply',
+      type: 'emergency',
+      rating: 4.9,
+      deliveryTime: 20,
+      distance: 3.2,
+      isOnline: true,
+      reliability: 99,
+      emergencyAvailable: true,
+      location: { lat: userLocation.lat - 0.02, lng: userLocation.lng + 0.01 }
+    }
+  ];
+
+  useEffect(() => {
+    setNearbyAgents(mockNearbyAgents);
+    
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [userLocation]);
+
+  const handleItemSelection = (itemId: string, agentId: string) => {
+    setSelectedItems(prev => ({
+      ...prev,
+      [itemId]: agentId
+    }));
+  };
+
+  const handleAuthorizeAll = async () => {
+    setIsAuthorizing(true);
+    try {
+      // Authorize each selected item with its chosen agent
+      for (const [itemId, agentId] of Object.entries(selectedItems)) {
+        await onAuthorizeItem(itemId, agentId);
+      }
+      setSelectedItems({});
+    } catch (error) {
+      console.error('Authorization failed:', error);
+    } finally {
+      setIsAuthorizing(false);
+    }
+  };
+
+  const handleEmergencyMode = () => {
+    setEmergencyMode(!emergencyMode);
+    if (!emergencyMode) {
+      // Enable emergency delivery with fastest available agent
+      const emergencyAgent = nearbyAgents.find(agent => agent.emergencyAvailable) || 
+                           nearbyAgents.find(agent => agent.type === 'emergency') ||
+                           nearbyAgents[0];
+      
+      const emergencySelections: Record<string, string> = {};
+      survivalItems.forEach(item => {
+        if (item.inStock) {
+          emergencySelections[item.id] = emergencyAgent.id;
+        }
+      });
+      
+      setSelectedItems(emergencySelections);
+    }
+  };
+
+  const getRiskColor = (level: string) => {
+    switch (level) {
+      case 'safe': return 'text-green-600';
+      case 'caution': return 'text-yellow-600';
+      case 'critical': return 'text-red-600';
+      default: return 'text-gray-600';
+    }
+  };
+
+  const getAgentTypeIcon = (type: string) => {
+    switch (type) {
+      case 'grocery': return <Store className="h-3 w-3" />;
+      case 'delivery': return <Truck className="h-3 w-3" />;
+      case 'emergency': return <AlertTriangle className="h-3 w-3" />;
+      default: return <Star className="h-3 w-3" />;
+    }
+  };
+
+  const getDeliveryTimeColor = (time: number) => {
+    if (time <= 30) return 'text-green-600';
+    if (time <= 60) return 'text-yellow-600';
+    return 'text-red-600';
+  };
+
+  return (
+    <div className={`max-w-sm mx-auto space-y-4 ${className}`}>
+      {/* Mobile Status Bar */}
+      <Card className="border-2 border-slate-200 sticky top-2 z-10 bg-white/95 backdrop-blur-sm">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              {isOnline ? (
+                <Wifi className="h-4 w-4 text-green-600" />
+              ) : (
+                <WifiOff className="h-4 w-4 text-red-600" />
+              )}
+              <span className="text-xs font-medium">
+                {isOnline ? 'Online' : 'Offline'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Smartphone className="h-4 w-4 text-blue-600" />
+              <span className="text-xs font-medium">Survival Mode</span>
+            </div>
+          </div>
+          
+          {/* Survival Status Widget */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Daily Calories</span>
+              <span className={`text-sm font-bold ${getRiskColor(survivalStatus.riskLevel)}`}>
+                {survivalStatus.currentCalories.toLocaleString()}
+              </span>
+            </div>
+            <Progress 
+              value={(survivalStatus.currentCalories / survivalStatus.dailyTarget) * 100} 
+              className="h-2"
+            />
+            <div className="flex items-center justify-between text-xs text-gray-600">
+              <span>Target: {survivalStatus.dailyTarget.toLocaleString()}</span>
+              <span className={`font-medium ${getRiskColor(survivalStatus.riskLevel)}`}>
+                {survivalStatus.riskLevel.toUpperCase()}
+              </span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Emergency Mode Toggle */}
+      {survivalStatus.riskLevel === 'critical' && (
+        <Alert className="border-red-200 bg-red-50">
+          <AlertTriangle className="h-4 w-4 text-red-600" />
+          <AlertDescription className="text-red-800">
+            <div className="flex items-center justify-between">
+              <span className="font-medium">Critical Survival Status</span>
+              <Button
+                onClick={handleEmergencyMode}
+                size="sm"
+                className="bg-red-600 hover:bg-red-700 text-white"
+              >
+                {emergencyMode ? 'Exit Emergency' : 'Emergency Mode'}
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* One-Tap Bundle Authorization */}
+      {survivalItems.every(item => item.inStock && item.deliveryRate >= 80) && (
+        <Card className="border-2 border-green-200 bg-green-50">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-green-800 text-lg">
+              <Heart className="h-5 w-5" />
+              Survival Bundle Ready
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-green-700">Bundle Cost:</span>
+              <span className="font-bold text-green-800">
+                {survivalStatus.bundleCost.toFixed(2)} SOVR
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-green-700">Total Calories:</span>
+              <span className="font-bold text-green-800">
+                {survivalStatus.bundleCalories.toLocaleString()} kcal
+              </span>
+            </div>
+            
+            <Button 
+              onClick={handleAuthorizeAll}
+              disabled={isAuthorizing}
+              className="w-full bg-green-600 hover:bg-green-700 text-white"
+              size="lg"
+            >
+              {isAuthorizing ? (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  Authorizing...
+                </>
+              ) : (
+                <>
+                  <Zap className="h-4 w-4 mr-2" />
+                  One-Tap Bundle Authorization
+                </>
+              )}
+            </Button>
+            
+            <p className="text-xs text-green-600 text-center">
+              Emergency delivery to {nearbyAgents.length} agents • {emergencyMode ? 'EMERGENCY MODE' : 'NORMAL MODE'}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Individual SKUs with Honoring Agents */}
+      <div className="space-y-3">
+        {survivalItems.map((item) => {
+          const availableAgents = nearbyAgents.filter(agent => 
+            agent.isOnline && agent.reliability >= 80
+          );
+          
+          return (
+            <Card key={item.id} className={`border-2 ${item.inStock ? 'border-slate-200' : 'border-red-200'}`}>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg">{item.name}</CardTitle>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-xs">
+                      {item.unitCost} SOVR
+                    </Badge>
+                    {item.inStock ? (
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-red-600" />
+                    )}
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span>Calories:</span>
+                  <span className="font-medium">{item.calories} kcal</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span>Delivery Rate:</span>
+                  <span className={item.deliveryRate >= 80 ? 'text-green-600' : 'text-red-600'}>
+                    {item.deliveryRate}%
+                  </span>
+                </div>
+
+                {/* Honoring Agent Selection */}
+                {item.inStock && (
+                  <div className="space-y-2">
+                    <span className="text-sm font-medium">Choose Honoring Agent:</span>
+                    <div className="space-y-1">
+                      {availableAgents.slice(0, 3).map((agent) => (
+                        <div
+                          key={agent.id}
+                          onClick={() => handleItemSelection(item.id, agent.id)}
+                          className={`p-2 rounded-lg border cursor-pointer transition-all ${
+                            selectedItems[item.id] === agent.id
+                              ? 'border-blue-500 bg-blue-50'
+                              : 'border-gray-200 hover:border-gray-300'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              {getAgentTypeIcon(agent.type)}
+                              <span className="text-sm font-medium">{agent.name}</span>
+                            </div>
+                            <div className="text-right">
+                              <div className={`text-xs ${getDeliveryTimeColor(agent.deliveryTime)}`}>
+                                {agent.deliveryTime}min
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                {agent.distance}mi • {agent.reliability}%
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Authorization Button */}
+                <Button
+                  onClick={() => {
+                    const agentId = selectedItems[item.id];
+                    if (agentId) {
+                      onAuthorizeItem(item.id, agentId);
+                    }
+                  }}
+                  disabled={!item.inStock || !selectedItems[item.id] || isAuthorizing}
+                  className="w-full"
+                  variant={item.inStock && selectedItems[item.id] ? "default" : "secondary"}
+                >
+                  {item.inStock ? (
+                    selectedItems[item.id] ? 'Authorize Item' : 'Select Agent First'
+                  ) : (
+                    'Out of Stock'
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* Location & Emergency Services */}
+      <Card className="border-2 border-blue-200 bg-blue-50">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-blue-800 text-lg">
+            <Navigation className="h-5 w-5" />
+            Location & Emergency
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2 text-sm text-blue-700">
+            <MapPin className="h-4 w-4" />
+            <span>Your location: {userLocation.lat.toFixed(3)}, {userLocation.lng.toFixed(3)}</span>
+          </div>
+          
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              onClick={onRequestEmergencyDelivery}
+              size="sm"
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              <Phone className="h-4 w-4 mr-1" />
+              Emergency Call
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-blue-300 text-blue-700"
+            >
+              <Truck className="h-4 w-4 mr-1" />
+              Track Delivery
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* SOVR Doctrine Mobile Footer */}
+      <Alert className="border-slate-200 bg-slate-50">
+        <Shield className="h-4 w-4 text-slate-600" />
+        <AlertDescription className="text-slate-700 text-xs">
+          <strong>SOVR Mobile:</strong> Authorization-first mobile workflows. External honoring agents as optional choices. 
+          Mechanical truth governs all survival operations. <em>No balance edits in emergency situations.</em>
+        </AlertDescription>
+      </Alert>
+    </div>
+  );
+}

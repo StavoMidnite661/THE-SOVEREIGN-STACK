@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Cyberpunk Dark Horizon Theme */
+    --background: 0 0% 0%;
+    /* #000000 Pure Black */
+    --foreground: 210 40% 98%;
+
+    --card: 221 50% 4%;
+    /* Very deep blue, barely visible against black */
+    --card-foreground: 210 40% 98%;
+
+    --popover: 221 50% 4%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 196 100% 50%;
+    /* Neon Cyan #00b4d8 */
+    --primary-foreground: 0 0% 0%;
+
+    --secondary: 221 40% 10%;
+    /* #0d1a36 Horizon Blue Tone */
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 221 40% 10%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 196 100% 50%;
+    --accent-foreground: 0 0% 0%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 221 30% 12%;
+    /* Subtle blue-ish border */
+    --input: 221 30% 12%;
+    --ring: 196 100% 50%;
+
+    --radius: 0.75rem;
+
+    --chart-1: 196 100% 50%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+  }
+
+  .dark {
+    --background: 0 0% 0%;
+    --foreground: 210 40% 98%;
+
+    --card: 221 50% 4%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 221 50% 4%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 196 100% 50%;
+    --primary-foreground: 0 0% 0%;
+
+    --secondary: 221 40% 10%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 221 40% 10%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 196 100% 50%;
+    --accent-foreground: 0 0% 0%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 221 30% 12%;
+    --input: 221 30% 12%;
+    --ring: 196 100% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}

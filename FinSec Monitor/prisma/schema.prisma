@@ -1,0 +1,377 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Monitoring relations
+  servers   Server[]
+  dashboards Dashboard[]
+  alerts    Alert[]
+}
+
+model Server {
+  id          String   @id @default(cuid())
+  name        String
+  host        String
+  port        Int
+  type        ServerType @default(HTTP)
+  description String?
+  isActive    Boolean  @default(true)
+  tags        String? // JSON string of tags
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  userId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Monitoring data
+  healthChecks HealthCheck[]
+  metrics     Metric[]
+  applications Application[]
+  
+  @@unique([host, port])
+}
+
+model Application {
+  id          String   @id @default(cuid())
+  name        String
+  type        AppType
+  description String?
+  endpoint    String
+  apiKey      String?
+  isActive    Boolean  @default(true)
+  tags        String? // JSON string of tags
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  serverId    String
+  server      Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  
+  // Monitoring data
+  healthChecks HealthCheck[]
+  metrics     Metric[]
+  apiEndpoints ApiEndpoint[]
+  webhooks    Webhook[]
+}
+
+model ApiEndpoint {
+  id              String   @id @default(cuid())
+  name            String
+  url             String
+  method          HttpMethod @default(GET)
+  headers         String? // JSON string
+  body            String?
+  expectedStatus  Int      @default(200)
+  timeout         Int      @default(30000)
+  interval        Int      @default(60000) // ms
+  isActive        Boolean  @default(true)
+  lastChecked     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  applicationId   String
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  
+  // Monitoring data
+  healthChecks    HealthCheck[]
+  responses       ApiResponse[]
+}
+
+model Webhook {
+  id          String   @id @default(cuid())
+  name        String
+  url         String
+  secret      String?
+  events      String? // JSON string of events
+  isActive    Boolean  @default(true)
+  lastTrigger DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  
+  // Monitoring data
+  deliveries    WebhookDelivery[]
+}
+
+model HealthCheck {
+  id        String   @id @default(cuid())
+  status    HealthStatus
+  responseTime Int? // ms
+  message   String?
+  timestamp DateTime @default(now())
+  
+  // Relations
+  serverId      String?
+  server        Server? @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  applicationId String?
+  application   Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  apiEndpointId String?
+  apiEndpoint   ApiEndpoint? @relation(fields: [apiEndpointId], references: [id], onDelete: Cascade)
+  
+  @@index([timestamp])
+  @@index([status])
+}
+
+model Metric {
+  id        String   @id @default(cuid())
+  name      String
+  value     Float
+  unit      String?
+  tags      String? // JSON string
+  timestamp DateTime @default(now())
+  
+  // Relations
+  serverId      String?
+  server        Server? @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  applicationId String?
+  application   Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  
+  @@index([timestamp])
+  @@index([name])
+}
+
+model ApiResponse {
+  id          String   @id @default(cuid())
+  status      Int
+  responseTime Int // ms
+  size        Int? // bytes
+  headers     String? // JSON string
+  body        String?
+  error       String?
+  timestamp   DateTime @default(now())
+  
+  // Relations
+  apiEndpointId String
+  apiEndpoint   ApiEndpoint @relation(fields: [apiEndpointId], references: [id], onDelete: Cascade)
+  
+  @@index([timestamp])
+  @@index([status])
+}
+
+model WebhookDelivery {
+  id          String   @id @default(cuid())
+  eventId     String
+  status      DeliveryStatus
+  response    String?
+  responseTime Int? // ms
+  attempts    Int      @default(1)
+  timestamp   DateTime @default(now())
+  
+  // Relations
+  webhookId   String
+  webhook     Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  
+  @@index([timestamp])
+  @@index([status])
+}
+
+model Dashboard {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  layout      String? // JSON string for dashboard layout
+  isPublic    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  userId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  widgets     Widget[]
+}
+
+model Widget {
+  id         String   @id @default(cuid())
+  type       WidgetType
+  title      String
+  config     String? // JSON string for widget configuration
+  positionX  Int      @default(0)
+  positionY  Int      @default(0)
+  width      Int      @default(4)
+  height     Int      @default(3)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  
+  // Relations
+  dashboardId String
+  dashboard   Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
+}
+
+model Alert {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  condition   String // JSON string for alert condition
+  severity    AlertSeverity @default(MEDIUM)
+  isActive    Boolean  @default(true)
+  isTriggered Boolean  @default(false)
+  lastTrigger DateTime?
+  acknowledgedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  userId      String
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  notifications AlertNotification[]
+}
+
+model AlertNotification {
+  id        String   @id @default(cuid())
+  type      NotificationType
+  target    String // email, webhook URL, etc.
+  sent      Boolean  @default(false)
+  sentAt    DateTime?
+  error     String?
+  createdAt DateTime @default(now())
+  
+  // Relations
+  alertId   String
+  alert     Alert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+}
+
+model Workflow {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  definition  String // JSON string for workflow definition
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  executions  WorkflowExecution[]
+}
+
+model WorkflowExecution {
+  id          String   @id @default(cuid())
+  status      ExecutionStatus @default(PENDING)
+  input       String? // JSON string
+  output      String? // JSON string
+  error       String?
+  startedAt   DateTime @default(now())
+  completedAt DateTime?
+  
+  // Relations
+  workflowId  String
+  workflow    Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  
+  steps       WorkflowStep[]
+}
+
+model WorkflowStep {
+  id          String   @id @default(cuid())
+  name        String
+  type        String
+  config      String? // JSON string
+  status      ExecutionStatus @default(PENDING)
+  input       String? // JSON string
+  output      String? // JSON string
+  error       String?
+  startedAt   DateTime @default(now())
+  completedAt DateTime?
+  
+  // Relations
+  executionId String
+  execution   WorkflowExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+}
+
+// Enums
+enum ServerType {
+  HTTP
+  HTTPS
+  TCP
+  UDP
+  SSH
+  DATABASE
+}
+
+enum AppType {
+  WEB
+  API
+  DATABASE
+  MICROSERVICE
+  WEBHOOK
+  CRON
+}
+
+enum HttpMethod {
+  GET
+  POST
+  PUT
+  DELETE
+  PATCH
+  HEAD
+  OPTIONS
+}
+
+enum HealthStatus {
+  HEALTHY
+  WARNING
+  CRITICAL
+  UNKNOWN
+}
+
+enum DeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  RETRYING
+}
+
+enum WidgetType {
+  METRIC
+  CHART
+  TABLE
+  ALERT
+  STATUS
+  LOG
+  WORKFLOW
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum NotificationType {
+  EMAIL
+  WEBHOOK
+  SLACK
+  SMS
+}
+
+enum ExecutionStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+}

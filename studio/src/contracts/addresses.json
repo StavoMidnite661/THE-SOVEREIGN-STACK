@@ -1,0 +1,47 @@
+{
+  "base": {
+    "chainId": 8453,
+    "name": "Base Mainnet",
+    "contracts": {
+      "SOVRToken": "0x65e75d0fc656a2e81ef17e9a2a8da58d82390422",
+      "sFIAT": "0x2c98e9c8ba005dc690d98e2e31a4811c094e0be3",
+      "ReserveManager": "0xed3db8f97024a3be5f5ae22f27024e5e94fad64a",
+      "SOVRPrivatePool": "0x18d4a13a0116b360efddb72aa626721cfa2a8228",
+      "SOVRProgrammablePool": "0x4f9b7a45b5234ca1cc96980d2cb0f49768d26622",
+      "SOVRHybridRouter_v2": "0xf682bd9789c0a66f2cb82ecc13fc6b43d7b58830",
+      "AttestorOracleEIP712": "0xaca71bc598139d9167414ae666f7cd9377b871f7",
+      "TWAPHelper": "0xa3620e31fb37b7de32fadf5c476d93c080fe3ad4",
+      "CreditEventRegistry": "0x0000000000000000000000000000000000000000"
+    }
+  },
+  "baseSepolia": {
+    "chainId": 84532,
+    "name": "Base Sepolia Testnet",
+    "contracts": {
+      "SOVRToken": "",
+      "sFIAT": "",
+      "ReserveManager": "",
+      "SOVRPrivatePool": "",
+      "SOVRProgrammablePool": "",
+      "SOVRHybridRouter_v2": "",
+      "AttestorOracleEIP712": "",
+      "TWAPHelper": "",
+      "CreditEventRegistry": ""
+    }
+  },
+  "localhost": {
+    "chainId": 31337,
+    "name": "Local Development",
+    "contracts": {
+      "SOVRToken": "",
+      "sFIAT": "",
+      "ReserveManager": "",
+      "SOVRPrivatePool": "",
+      "SOVRProgrammablePool": "",
+      "SOVRHybridRouter_v2": "",
+      "AttestorOracleEIP712": "",
+      "TWAPHelper": "",
+      "CreditEventRegistry": ""
+    }
+  }
+}
