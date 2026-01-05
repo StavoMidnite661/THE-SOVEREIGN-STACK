@@ -48,14 +48,15 @@ The Sovereign Stack is a modular and scalable platform designed to support finan
 
 ## Project Structure
 
-- `.agent/`: Agent configurations and scripts.
-- `.gemini/`: Gemini-related configurations.
-- `.kilocode/`: KiloCode configurations.
-- `archive/`: Archived files and historical data.
-- `FINANCE/`: Financial applications and tools.
-- `musik site/`: Musik site-related files.
-- `SOVR Mortgage Escro/`: Mortgage escrow tools.
-- `The Complete Stack/`: Core stack implementations.
+- `FinSec Monitor/`: System Control Center, monitors system health.
+- `ORACLE-LEDGER-main/`: The Oracle Ledger, part of the data layer.
+- `SOVR Mortgage Escrow/`: Mortgage escrow tools.
+- `sovr_hybrid_engineV2/`: The core SOVR Hybrid Engine.
+- `studio/`: The primary user interface (USD Gateway Frontend).
+- `tigerbeetle-main/`: The core clearing authority.
+- `config/`: Configuration files.
+- `docs/`: Documentation files.
+- `tools/`: Various tools and scripts.
 
 ## Contributing
 
